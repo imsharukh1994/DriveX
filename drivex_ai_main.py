@@ -5,6 +5,10 @@ import heapq
 import boto3
 import json
 import threading
+import logging
+
+# --- Logging Setup ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Object Detection Module (Perception) ---
 class ObjectDetection:
@@ -61,14 +65,14 @@ class CloudSync:
         self.s3 = boto3.client('s3')
         self.bucket_name = bucket_name
 
-    def upload_route(self, route, file_name="route_data.json"):
+    def upload_data(self, data, file_name):
         try:
             with open(file_name, "w") as f:
-                json.dump({"route": route}, f)
+                json.dump(data, f)
             self.s3.upload_file(file_name, self.bucket_name, file_name)
-            print(f"Route uploaded to {self.bucket_name}/{file_name}")
+            logging.info(f"Data uploaded to {self.bucket_name}/{file_name}")
         except Exception as e:
-            print("Error uploading route:", e)
+            logging.error(f"Error uploading data: {e}")
 
 # --- Autonomous Driving Integration ---
 class DriverXAI:
@@ -85,7 +89,15 @@ class DriverXAI:
         return self.path_planning.astar(start, goal)
 
     def upload_route_to_cloud(self, route):
-        self.cloud_sync.upload_route(route)
+        self.cloud_sync.upload_data({"route": route}, "route_data.json")
+
+    def upload_detected_objects(self, detected_objects):
+        self.cloud_sync.upload_data(detected_objects.to_dict(), "detected_objects.json")
+
+    def overlay_path(self, frame, path):
+        for point in path:
+            cv2.circle(frame, (point[1] * 50 + 25, point[0] * 50 + 25), 10, (0, 255, 0), -1)
+        return frame
 
 # --- Main Program ---
 if __name__ == "__main__":
@@ -116,9 +128,24 @@ if __name__ == "__main__":
         # Process frame for object detection
         processed_frame, detected_objects = driverx.process_frame(frame)
 
-        # Display detected objects
+        # Overlay planned route on frame
+        route = driverx.find_route(start, goal)
+        if route:
+            processed_frame = driverx.overlay_path(processed_frame, route)
+
+        # Display detected objects and confidence scores
+        for _, row in detected_objects.iterrows():
+            label = f"{row['name']} ({row['confidence']:.2f})"
+            x1, y1, x2, y2 = map(int, [row['xmin'], row['ymin'], row['xmax'], row['ymax']])
+            cv2.rectangle(processed_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            cv2.putText(processed_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+        # Upload detected objects to cloud
+        driverx.upload_detected_objects(detected_objects)
+
+        # Display frame
         cv2.imshow("DriverX AI - Perception", processed_frame)
-        print("Detected Objects:", detected_objects)
+        logging.info("Detected Objects: %s", detected_objects)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
